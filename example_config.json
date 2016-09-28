@@ -1,4 +1,5 @@
 {
   "token": "community token",
-  "music_directory": "/home/music/mb/"
+  "music_directory": "/home/music/mb/",
+  "admin_id": 111
 }

@@ -2,20 +2,18 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
-	"net/http"
+	"log"
+	"os"
 	"os/exec"
+	"time"
 )
-
-type Player struct {
-	PlayingNow    string
-	AlreadyPlayed []string
-	NotPlayed     []string
-}
 
 type Config struct {
 	Token          string `json:"token"`
 	MusicDirectory string `json:"music_directory"`
+	AdminID        int    `json:"admin_id"`
 }
 
 type MyChan struct {
@@ -26,9 +24,16 @@ type MyChan struct {
 var (
 	conf     Config
 	ch       chan MyChan
-	p        Player
 	vk_token string
+	tracks   []Track
+	all      []Track
+	skip     chan int
 )
+
+type Track struct {
+	Name     string
+	Duration time.Duration
+}
 
 func Run() {
 	file, err := ioutil.ReadFile("config.json")
@@ -40,45 +45,45 @@ func Run() {
 		panic(err)
 	}
 
+	tracks = []Track{}
+	all = []Track{}
+	logfile, err := os.OpenFile(`logs.log`, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
+	if err != nil {
+		panic(err)
+	}
+	log.SetOutput(logfile)
+
 	vk_token = conf.Token
 
-	ch = make(chan MyChan, 1)
-
-	p = Player{
-		NotPlayed:     []string{},
-		AlreadyPlayed: []string{},
-		PlayingNow:    ``,
-	}
+	ch = make(chan MyChan, 100)
+	skip = make(chan int, 1)
 
 	go GetNewTracks()
 	go DownloadMusic(ch)
-
-	http.HandleFunc(`/play`, play)
-	http.ListenAndServe(`:8000`, nil)
+	play()
 }
 
-func play(w http.ResponseWriter, r *http.Request) {
-	if len(p.NotPlayed) > 0 {
-		p.PlayingNow = p.NotPlayed[0]
-		p.NotPlayed = p.NotPlayed[1:]
-		p.AlreadyPlayed = append(p.AlreadyPlayed, p.PlayingNow)
+func play() {
+	for {
+		if len(tracks) != 0 {
+			current := tracks[0]
+			cmd := exec.Command(`afplay`, conf.MusicDirectory+current.Name)
+			if err := cmd.Start(); err != nil {
+				die(err)
+			}
+			log.Println(`Играет трек ` + tracks[0].Name)
+			tracks = tracks[1:]
 
-		cmd := exec.Command(`killall`, `afplay`)
-		cmd.Run()
-
-		cmd = exec.Command(`afplay`, conf.MusicDirectory+p.PlayingNow)
-		err := cmd.Start()
-		if err != nil {
-			panic(err)
+			select {
+			case <-time.After(current.Duration):
+				continue
+			case <-skip:
+				exec.Command(`killall`, `afplay`).Run()
+			}
+		} else if len(all) != 0 {
+			log.Println(fmt.Sprintf(`Плейлист играет заново, %d песен`, len(all)))
+			tracks = all
 		}
-
-		w.Write([]byte(p.PlayingNow))
-	} else {
-		w.Write([]byte(`We have no music, sorry!`))
+		time.Sleep(2 * time.Second)
 	}
-	//fmt.Println(`------`)
-	//fmt.Println(`Now Playing: `, p.PlayingNow)
-	//fmt.Println(`Out`, p.AlreadyPlayed)
-	//fmt.Println(`Will play`, p.NotPlayed)
-	//fmt.Println(`------`)
 }

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"k8s.io/kubernetes/staging/src/k8s.io/client-go/1.4/pkg/util/rand"
+	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -33,9 +35,11 @@ type Attachment struct {
 }
 
 type Audio struct {
-	Artist string `json:"artist"`
-	Title  string `json:"title"`
-	Url    string `json:"url"`
+	Id       int    `json:"id"`
+	Artist   string `json:"artist"`
+	Title    string `json:"title"`
+	Url      string `json:"url"`
+	Duration int    `json:"duration"`
 }
 
 const (
@@ -56,53 +60,83 @@ func GetNewTracks() {
 
 	var r MetaResponse
 	for {
-		time.Sleep(10 * time.Second)
+		time.Sleep(2 * time.Second)
 		resp, err := c.Do(req)
 		if err != nil {
-			panic(err)
+			die(err)
 		}
 
 		d := json.NewDecoder(resp.Body)
 		err = d.Decode(&r)
 		if err != nil {
-			panic(err)
+			die(err)
 		}
 
 		for _, m := range r.Messages {
-			if m.ReadState != 1 && m.Attachments != nil {
-				for _, a := range *m.Attachments {
-					if a.Type == `audio` {
-						ch <- MyChan{
-							UserID: m.UserID,
-							Audio:  a.Audio,
-						}
-					}
+			if m.ReadState != 1 {
+				fmt.Println(m)
+				if m.UserID == conf.AdminID && strings.Contains(m.Body, `/skip`) {
+					skip <- 1
 				}
-			}
-		}
+				if m.Attachments != nil {
+					for _, a := range *m.Attachments {
+						fmt.Println(a)
+						if a.Type == `audio` {
+							ch <- MyChan{
+								UserID: m.UserID,
+								Audio:  a.Audio,
+							} //wow
+						} //wow
+					} //wow
+				} //wow
+			} //wow
+		} //wow
+	} //wow
+} //wow
+
+func download(a Audio, path, fn string) {
+	resp, err := http.Get(a.Url)
+	if err != nil {
+		die(err)
 	}
+
+	f, err := os.OpenFile(path+fn, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		die(err)
+	}
+	_, err = io.Copy(f, resp.Body)
+	if err != nil {
+		die(err)
+	}
+	resp.Body.Close()
+	f.Close()
+
+	t := Track{Name: fn, Duration: time.Duration(a.Duration) * time.Second}
+	tracks = append(tracks, t)
+	all = append(all, t)
 }
 
 func DownloadMusic(in <-chan MyChan) {
 	c := http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest(`GET`, vk_api+`/messages.send`, nil)
 	if err != nil {
-		panic(err)
+		die(err)
 	}
 
 	q := req.URL.Query()
 	q.Add(`access_token`, vk_token)
 	q.Add(`peer_id`, `0`)
-	q.Add(`message`, ``)
+	q.Add(`message`, `debug`)
 	q.Add(`v`, `5.53`)
 	path := conf.MusicDirectory
 	os.MkdirAll(path, 0777)
 
-	answer := func(id, msg string) {
+	answer := func(id, msg string) error {
 		q.Set(`peer_id`, id)
 		q.Set(`message`, msg)
 		req.URL.RawQuery = q.Encode()
-		c.Do(req)
+		_, err := c.Do(req)
+		return err
 	}
 
 	for {
@@ -110,43 +144,43 @@ func DownloadMusic(in <-chan MyChan) {
 		a := mc.Audio
 		id := strconv.Itoa(mc.UserID)
 
+		logText := fmt.Sprintf(`id%d кинул "%s - %s"`, mc.UserID, a.Artist, a.Title)
+		log.Println(logText)
+
 		// Выкачивание трека
 		// Иногда ВК не даёт ссылку на трек
 		if a.Url == `` {
 			msg := `Invalid track: ` + a.Artist + a.Title + antiflood()
-			answer(id, msg)
+			if err := answer(id, msg); err != nil {
+				die(err)
+			}
 			continue
 		}
 
-		resp, err := http.Get(a.Url)
-		if err != nil {
-			panic(err)
-		}
-
-		fn := fmt.Sprintf(`%s - %s.mp3`, a.Artist, a.Title)
-		f, err := os.OpenFile(path+fn, os.O_RDWR|os.O_CREATE, 0666)
-		if err != nil {
-			panic(err)
-		}
-		_, err = io.Copy(f, resp.Body)
-		if err != nil {
-			panic(err)
-		}
-
-		p.NotPlayed = append(p.NotPlayed, fn)
-		resp.Body.Close()
-		f.Close()
-
 		msg := `Your track is accepted!` + antiflood()
-		answer(id, msg)
+		if err := answer(id, msg); err != nil {
+			die(err)
+		}
+
+		fn := fmt.Sprintf(`%d.mp3`, a.Id)
+		if _, err := os.Open(fn); os.IsNotExist(err) {
+			go download(a, path, fn)
+		}
+
 	}
 }
 
 func antiflood() string {
 	sym := '\u200B'
 	text := ""
-	for i := 0; i < rand.IntnRange(0, 20); i++ {
+
+	for i := 0; i < rand.Intn(20); i++ {
 		text += string(sym)
 	}
 	return text
+}
+
+func die(err error) {
+	log.Println(err)
+	panic(err)
 }
