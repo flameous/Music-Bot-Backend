@@ -16,18 +16,24 @@ type Config struct {
 	AdminID        int    `json:"admin_id"`
 }
 
-type MyChan struct {
+type AudioChan struct {
 	UserID int
 	Audio  Audio
 }
 
+type Msg struct {
+	UserID  int
+	Message string
+}
+
 var (
 	conf     Config
-	ch       chan MyChan
+	ch       chan AudioChan
 	vk_token string
 	tracks   []Track
 	all      []Track
 	skip     chan int
+	msgChan  chan Msg
 )
 
 type Track struct {
@@ -55,11 +61,13 @@ func Run() {
 
 	vk_token = conf.Token
 
-	ch = make(chan MyChan, 100)
+	ch = make(chan AudioChan, 100)
+	msgChan = make(chan Msg, 100)
 	skip = make(chan int, 1)
 
-	go GetNewTracks()
+	go getMessages()
 	go DownloadMusic(ch)
+	go sendMessage(msgChan)
 	play()
 }
 
@@ -75,10 +83,10 @@ func play() {
 			tracks = tracks[1:]
 
 			select {
-			case <-time.After(current.Duration):
-				continue
 			case <-skip:
 				exec.Command(`killall`, `afplay`).Run()
+
+			case <-time.After(current.Duration):
 			}
 		} else if len(all) != 0 {
 			log.Println(fmt.Sprintf(`Плейлист играет заново, %d песен`, len(all)))

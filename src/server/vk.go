@@ -46,7 +46,7 @@ const (
 	vk_api string = `https://api.vk.com/method`
 )
 
-func GetNewTracks() {
+func getMessages() {
 	c := http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest(`GET`, vk_api+`/messages.get`, nil)
 	if err != nil {
@@ -74,20 +74,20 @@ func GetNewTracks() {
 
 		for _, m := range r.Messages {
 			if m.ReadState != 1 {
-				fmt.Println(m)
 				if m.UserID == conf.AdminID && strings.Contains(m.Body, `/skip`) {
 					skip <- 1
-				}
-				if m.Attachments != nil {
+					msgChan <- Msg{m.UserID, `skipped`}
+				} else if m.Attachments != nil {
 					for _, a := range *m.Attachments {
-						fmt.Println(a)
 						if a.Type == `audio` {
-							ch <- MyChan{
+							ch <- AudioChan{
 								UserID: m.UserID,
 								Audio:  a.Audio,
 							} //wow
 						} //wow
 					} //wow
+				} else {
+					msgChan <- Msg{m.UserID, `wtf?`}
 				} //wow
 			} //wow
 		} //wow
@@ -116,7 +116,7 @@ func download(a Audio, path, fn string) {
 	all = append(all, t)
 }
 
-func DownloadMusic(in <-chan MyChan) {
+func sendMessage(in <-chan Msg) {
 	c := http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest(`GET`, vk_api+`/messages.send`, nil)
 	if err != nil {
@@ -126,41 +126,39 @@ func DownloadMusic(in <-chan MyChan) {
 	q := req.URL.Query()
 	q.Add(`access_token`, vk_token)
 	q.Add(`peer_id`, `0`)
-	q.Add(`message`, `debug`)
+	q.Add(`message`, `woops`)
 	q.Add(`v`, `5.53`)
-	path := conf.MusicDirectory
-	os.MkdirAll(path, 0777)
-
-	answer := func(id, msg string) error {
-		q.Set(`peer_id`, id)
-		q.Set(`message`, msg)
+	for {
+		m := <-in
+		q.Set(`peer_id`, strconv.Itoa(m.UserID))
+		q.Set(`message`, m.Message+antiflood())
 		req.URL.RawQuery = q.Encode()
 		_, err := c.Do(req)
-		return err
+		if err != nil {
+			die(err)
+		}
 	}
 
+}
+func DownloadMusic(in <-chan AudioChan) {
+	path := conf.MusicDirectory
+	os.MkdirAll(path, 0777)
 	for {
 		mc := <-in
 		a := mc.Audio
-		id := strconv.Itoa(mc.UserID)
 
-		logText := fmt.Sprintf(`id%d кинул "%s - %s"`, mc.UserID, a.Artist, a.Title)
-		log.Println(logText)
+		l := fmt.Sprintf(`id%d кинул "%s - %s"`, mc.UserID, a.Artist, a.Title)
+		log.Println(l)
 
 		// Выкачивание трека
 		// Иногда ВК не даёт ссылку на трек
 		if a.Url == `` {
-			msg := `Invalid track: ` + a.Artist + a.Title + antiflood()
-			if err := answer(id, msg); err != nil {
-				die(err)
-			}
+			msg := `Invalid track: ` + a.Artist + a.Title
+			msgChan <- Msg{mc.UserID, msg}
 			continue
 		}
 
-		msg := `Your track is accepted!` + antiflood()
-		if err := answer(id, msg); err != nil {
-			die(err)
-		}
+		msgChan <- Msg{mc.UserID, `Your track is accepted!`}
 
 		fn := fmt.Sprintf(`%d.mp3`, a.Id)
 		if _, err := os.Open(fn); os.IsNotExist(err) {
