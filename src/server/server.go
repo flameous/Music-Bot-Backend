@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"time"
 )
 
@@ -28,12 +29,13 @@ type Msg struct {
 
 var (
 	conf     Config
-	ch       chan AudioChan
 	vk_token string
 	tracks   []Track
 	all      []Track
-	skip     chan int
+	ch       chan AudioChan
 	msgChan  chan Msg
+	skip     chan int
+	lastfm   chan AudioChan
 )
 
 type Track struct {
@@ -64,32 +66,60 @@ func Run() {
 	ch = make(chan AudioChan, 100)
 	msgChan = make(chan Msg, 100)
 	skip = make(chan int, 1)
+	lastfm = make(chan AudioChan, 100)
 
 	go getMessages()
 	go DownloadMusic(ch)
 	go sendMessage(msgChan)
-	play()
+	go scrobble()
+	serve()
 }
 
-func play() {
+func play(track string) {
+	var err error
+
+	switch runtime.GOOS {
+	case `windows`:
+		err = exec.Command(`vlc.exe`, conf.MusicDirectory+track, `--play-and-exit`).Start()
+	default:
+		err = exec.Command(`afplay`, conf.MusicDirectory+track).Start()
+	}
+	if err != nil {
+		die(err)
+	}
+
+}
+
+func kill() {
+	var err error
+
+	switch runtime.GOOS {
+	case `windows`:
+		err = exec.Command(`taskkill`, `/F`, `/IM`, `vlc.exe`).Run()
+	default:
+		err = exec.Command(`killall`, `afplay`).Run()
+	}
+	if err != nil {
+		die(err)
+	}
+}
+
+func serve() {
 	for {
 		if len(tracks) != 0 {
 			current := tracks[0]
-			cmd := exec.Command(`afplay`, conf.MusicDirectory+current.Name)
-			if err := cmd.Start(); err != nil {
-				die(err)
-			}
-			log.Println(`Играет трек ` + tracks[0].Name)
+			play(current.Name)
+			log.Print(`Играет трек ` + tracks[0].Name + nl)
 			tracks = tracks[1:]
 
 			select {
 			case <-skip:
-				exec.Command(`killall`, `afplay`).Run()
+				kill()
 
 			case <-time.After(current.Duration):
 			}
 		} else if len(all) != 0 {
-			log.Println(fmt.Sprintf(`Плейлист играет заново, %d песен`, len(all)))
+			log.Print(fmt.Sprintf(`Плейлист играет заново, %d песен`, len(all)), nl)
 			tracks = all
 		}
 		time.Sleep(2 * time.Second)

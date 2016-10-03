@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 
 export GOPATH=`pwd`
-go build src/main.go
+
+env GOOS=windows GOARCH=amd64 go build src/main.go

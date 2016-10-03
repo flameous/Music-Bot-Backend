@@ -23,10 +23,10 @@ type Response struct {
 }
 
 type Message struct {
-	Body        string        `json:"body"`
-	UserID      int           `json:"user_id"`
-	Attachments *[]Attachment `json:"attachments"`
-	ReadState   int           `json:"read_state"` // 1 - read, 0 - unread
+	Body        string       `json:"body"`
+	UserID      int          `json:"user_id"`
+	Attachments []Attachment `json:"attachments"`
+	ReadState   int          `json:"read_state"` // 1 - read, 0 - unread
 }
 
 type Attachment struct {
@@ -44,6 +44,7 @@ type Audio struct {
 
 const (
 	vk_api string = `https://api.vk.com/method`
+	nl            = "\r\n"
 )
 
 func getMessages() {
@@ -58,8 +59,9 @@ func getMessages() {
 	q.Add(`v`, `5.53`)
 	req.URL.RawQuery = q.Encode()
 
-	var r MetaResponse
 	for {
+		// АААААА!!!
+		var r MetaResponse
 		time.Sleep(2 * time.Second)
 		resp, err := c.Do(req)
 		if err != nil {
@@ -77,30 +79,33 @@ func getMessages() {
 				if m.UserID == conf.AdminID && strings.Contains(m.Body, `/skip`) {
 					skip <- 1
 					msgChan <- Msg{m.UserID, `skipped`}
-				} else if m.Attachments != nil {
-					for _, a := range *m.Attachments {
+				} else if len(m.Attachments) > 0 {
+					for _, a := range m.Attachments {
 						if a.Type == `audio` {
 							ch <- AudioChan{
 								UserID: m.UserID,
 								Audio:  a.Audio,
-							} //wow
-						} //wow
-					} //wow
+							}
+						}
+					}
 				} else {
 					msgChan <- Msg{m.UserID, `wtf?`}
-				} //wow
-			} //wow
-		} //wow
-	} //wow
-} //wow
+				}
+			}
+		}
+		resp.Body.Close()
+	}
+}
 
 func download(a Audio, path, fn string) {
 	resp, err := http.Get(a.Url)
+	defer resp.Body.Close()
 	if err != nil {
 		die(err)
 	}
 
 	f, err := os.OpenFile(path+fn, os.O_RDWR|os.O_CREATE, 0666)
+	defer f.Close()
 	if err != nil {
 		die(err)
 	}
@@ -108,8 +113,6 @@ func download(a Audio, path, fn string) {
 	if err != nil {
 		die(err)
 	}
-	resp.Body.Close()
-	f.Close()
 
 	t := Track{Name: fn, Duration: time.Duration(a.Duration) * time.Second}
 	tracks = append(tracks, t)
@@ -133,9 +136,13 @@ func sendMessage(in <-chan Msg) {
 		q.Set(`peer_id`, strconv.Itoa(m.UserID))
 		q.Set(`message`, m.Message+antiflood())
 		req.URL.RawQuery = q.Encode()
-		_, err := c.Do(req)
+		resp, err := c.Do(req)
 		if err != nil {
 			die(err)
+		}
+
+		if resp.StatusCode != 200 {
+			log.Print(`error in messages.send`, q, nl)
 		}
 	}
 
@@ -148,7 +155,7 @@ func DownloadMusic(in <-chan AudioChan) {
 		a := mc.Audio
 
 		l := fmt.Sprintf(`id%d кинул "%s - %s"`, mc.UserID, a.Artist, a.Title)
-		log.Println(l)
+		log.Print(l, nl)
 
 		// Выкачивание трека
 		// Иногда ВК не даёт ссылку на трек
@@ -158,9 +165,15 @@ func DownloadMusic(in <-chan AudioChan) {
 			continue
 		}
 
-		msgChan <- Msg{mc.UserID, `Your track is accepted!`}
-
 		fn := fmt.Sprintf(`%d.mp3`, a.Id)
+		for _, t := range tracks {
+			if fn == t.Name {
+				msgChan <- Msg{mc.UserID, `Track is already added`}
+				continue
+			}
+		}
+
+		msgChan <- Msg{mc.UserID, `Your track is accepted!`}
 		if _, err := os.Open(fn); os.IsNotExist(err) {
 			go download(a, path, fn)
 		}
@@ -179,6 +192,6 @@ func antiflood() string {
 }
 
 func die(err error) {
-	log.Println(err)
+	log.Print(err, nl)
 	panic(err)
 }
