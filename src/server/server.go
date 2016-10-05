@@ -17,17 +17,12 @@ type Config struct {
 	Admins         []int  `json:"admins"`
 }
 
-type AudioChan struct {
-	UserID int
-	Audio  Audio
-}
-
 var (
 	conf     Config
 	vk_token string
 	tracks   []Track
 	all      []Track
-	ch       chan AudioChan
+	ch       chan Audio
 	action   chan string
 )
 

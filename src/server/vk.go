@@ -58,7 +58,7 @@ func userIsAdmin(id int) bool {
 }
 
 func getMessages() {
-	ch = make(chan AudioChan, 100)
+	ch = make(chan Audio, 100)
 	go DownloadMusic(ch)
 
 	c := http.Client{Timeout: 10 * time.Second}
@@ -92,9 +92,16 @@ func getMessages() {
 				if len(m.Attachments) > 0 {
 					for _, a := range m.Attachments {
 						if a.Type == `audio` {
-							ch <- AudioChan{
-								UserID: m.UserID,
-								Audio:  a.Audio,
+							if a.Audio.Url != `` {
+								l := fmt.Sprintf(`id%d sent "%s - %s"`+nl,
+									m.UserID, a.Audio.Artist, a.Audio.Title)
+								fmt.Print(l)
+								log.Print(l)
+
+								ch <- a.Audio
+								sendMessage(m.UserID, `Your track is accepted!`)
+							} else {
+								sendMessage(m.UserID, `Invalid track!`)
 							}
 						}
 					}
@@ -120,8 +127,8 @@ func getMessages() {
 	}
 }
 
-func download(a Audio, fn string) {
-	resp, err := http.Get(a.Url)
+func download(url string, fn string) {
+	resp, err := http.Get(url)
 	defer resp.Body.Close()
 	if err != nil {
 		die(err)
@@ -163,30 +170,15 @@ func sendMessage(id int, msg string) {
 	}
 }
 
-func DownloadMusic(in <-chan AudioChan) {
+func DownloadMusic(in <-chan Audio) {
 	path := conf.MusicDirectory
 	os.MkdirAll(path, 0777)
 	for {
-		mc := <-in
-		a := mc.Audio
-
-		l := fmt.Sprintf(`id%d кинул "%s - %s"`+nl, mc.UserID, a.Artist, a.Title)
-		fmt.Print(l)
-		log.Print(l)
-
-		// Выкачивание трека
-		// Иногда ВК не даёт ссылку на трек
-		if a.Url == `` {
-			msg := `Invalid track: ` + a.Artist + a.Title
-			sendMessage(mc.UserID, msg)
-			continue
-		}
+		a := <-in
 
 		fn := fmt.Sprintf(`%d.mp3`, a.Id)
-		sendMessage(mc.UserID, `Your track is accepted!`)
-
 		if _, err := os.Open(path + fn); os.IsNotExist(err) {
-			download(a, path+fn)
+			download(a.Url, path+fn)
 		}
 		t := Track{Name: fn, Duration: time.Duration(a.Duration) * time.Second}
 		tracks = append(tracks, t)
