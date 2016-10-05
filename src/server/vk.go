@@ -45,9 +45,22 @@ type Audio struct {
 const (
 	vk_api string = `https://api.vk.com/method`
 	nl            = "\r\n"
+	help   string = `Hello, gimme cool music tracks!`
 )
 
+func userIsAdmin(id int) bool {
+	for _, el := range conf.Admins {
+		if id == el {
+			return true
+		}
+	}
+	return false
+}
+
 func getMessages() {
+	ch = make(chan AudioChan, 100)
+	go DownloadMusic(ch)
+
 	c := http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest(`GET`, vk_api+`/messages.get`, nil)
 	if err != nil {
@@ -76,10 +89,7 @@ func getMessages() {
 
 		for _, m := range r.Messages {
 			if m.ReadState != 1 {
-				if m.UserID == conf.AdminID && strings.Contains(m.Body, `/skip`) {
-					skip <- 1
-					msgChan <- Msg{m.UserID, `skipped`}
-				} else if len(m.Attachments) > 0 {
+				if len(m.Attachments) > 0 {
 					for _, a := range m.Attachments {
 						if a.Type == `audio` {
 							ch <- AudioChan{
@@ -88,23 +98,36 @@ func getMessages() {
 							}
 						}
 					}
-				} else {
-					msgChan <- Msg{m.UserID, `wtf?`}
+					continue
 				}
+
+				if userIsAdmin(m.UserID) {
+					if strings.Contains(m.Body, `/skip`) {
+						action <- `skip`
+						sendMessage(m.UserID, `skipped`)
+						continue
+					}
+					if strings.Contains(m.Body, `/repeat`) {
+						action <- `repeat`
+						sendMessage(m.UserID, `repeat`)
+						continue
+					}
+				}
+				sendMessage(m.UserID, help)
 			}
 		}
 		resp.Body.Close()
 	}
 }
 
-func download(a Audio, path, fn string) {
+func download(a Audio, fn string) {
 	resp, err := http.Get(a.Url)
 	defer resp.Body.Close()
 	if err != nil {
 		die(err)
 	}
 
-	f, err := os.OpenFile(path+fn, os.O_RDWR|os.O_CREATE, 0666)
+	f, err := os.OpenFile(fn, os.O_RDWR|os.O_CREATE, 0666)
 	defer f.Close()
 	if err != nil {
 		die(err)
@@ -113,13 +136,9 @@ func download(a Audio, path, fn string) {
 	if err != nil {
 		die(err)
 	}
-
-	t := Track{Name: fn, Duration: time.Duration(a.Duration) * time.Second}
-	tracks = append(tracks, t)
-	all = append(all, t)
 }
 
-func sendMessage(in <-chan Msg) {
+func sendMessage(id int, msg string) {
 	c := http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest(`GET`, vk_api+`/messages.send`, nil)
 	if err != nil {
@@ -128,25 +147,22 @@ func sendMessage(in <-chan Msg) {
 
 	q := req.URL.Query()
 	q.Add(`access_token`, vk_token)
-	q.Add(`peer_id`, `0`)
-	q.Add(`message`, `woops`)
 	q.Add(`v`, `5.53`)
-	for {
-		m := <-in
-		q.Set(`peer_id`, strconv.Itoa(m.UserID))
-		q.Set(`message`, m.Message+antiflood())
-		req.URL.RawQuery = q.Encode()
-		resp, err := c.Do(req)
-		if err != nil {
-			die(err)
-		}
+	q.Add(`peer_id`, strconv.Itoa(id))
+	q.Add(`message`, msg+antiFlood())
 
-		if resp.StatusCode != 200 {
-			log.Print(`error in messages.send`, q, nl)
-		}
+	req.URL.RawQuery = q.Encode()
+	resp, err := c.Do(req)
+	defer resp.Body.Close()
+	if err != nil {
+		die(err)
 	}
 
+	if resp.StatusCode != 200 {
+		log.Print(`error in messages.send`, q, nl)
+	}
 }
+
 func DownloadMusic(in <-chan AudioChan) {
 	path := conf.MusicDirectory
 	os.MkdirAll(path, 0777)
@@ -154,34 +170,32 @@ func DownloadMusic(in <-chan AudioChan) {
 		mc := <-in
 		a := mc.Audio
 
-		l := fmt.Sprintf(`id%d кинул "%s - %s"`, mc.UserID, a.Artist, a.Title)
-		log.Print(l, nl)
+		l := fmt.Sprintf(`id%d кинул "%s - %s"`+nl, mc.UserID, a.Artist, a.Title)
+		fmt.Print(l)
+		log.Print(l)
 
 		// Выкачивание трека
 		// Иногда ВК не даёт ссылку на трек
 		if a.Url == `` {
 			msg := `Invalid track: ` + a.Artist + a.Title
-			msgChan <- Msg{mc.UserID, msg}
+			sendMessage(mc.UserID, msg)
 			continue
 		}
 
 		fn := fmt.Sprintf(`%d.mp3`, a.Id)
-		for _, t := range tracks {
-			if fn == t.Name {
-				msgChan <- Msg{mc.UserID, `Track is already added`}
-				continue
-			}
-		}
+		sendMessage(mc.UserID, `Your track is accepted!`)
 
-		msgChan <- Msg{mc.UserID, `Your track is accepted!`}
-		if _, err := os.Open(fn); os.IsNotExist(err) {
-			go download(a, path, fn)
+		if _, err := os.Open(path + fn); os.IsNotExist(err) {
+			download(a, path+fn)
 		}
+		t := Track{Name: fn, Duration: time.Duration(a.Duration) * time.Second}
+		tracks = append(tracks, t)
+		all = append(all, t)
 
 	}
 }
 
-func antiflood() string {
+func antiFlood() string {
 	sym := '\u200B'
 	text := ""
 
@@ -189,9 +203,4 @@ func antiflood() string {
 		text += string(sym)
 	}
 	return text
-}
-
-func die(err error) {
-	log.Print(err, nl)
-	panic(err)
 }

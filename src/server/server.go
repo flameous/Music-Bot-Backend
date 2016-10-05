@@ -14,17 +14,12 @@ import (
 type Config struct {
 	Token          string `json:"token"`
 	MusicDirectory string `json:"music_directory"`
-	AdminID        int    `json:"admin_id"`
+	Admins         []int  `json:"admins"`
 }
 
 type AudioChan struct {
 	UserID int
 	Audio  Audio
-}
-
-type Msg struct {
-	UserID  int
-	Message string
 }
 
 var (
@@ -33,9 +28,7 @@ var (
 	tracks   []Track
 	all      []Track
 	ch       chan AudioChan
-	msgChan  chan Msg
-	skip     chan int
-	lastfm   chan AudioChan
+	action   chan string
 )
 
 type Track struct {
@@ -60,24 +53,15 @@ func Run() {
 		panic(err)
 	}
 	log.SetOutput(logfile)
-
 	vk_token = conf.Token
 
-	ch = make(chan AudioChan, 100)
-	msgChan = make(chan Msg, 100)
-	skip = make(chan int, 1)
-	lastfm = make(chan AudioChan, 100)
-
+	action = make(chan string)
 	go getMessages()
-	go DownloadMusic(ch)
-	go sendMessage(msgChan)
-	go scrobble()
 	serve()
 }
 
 func play(track string) {
 	var err error
-
 	switch runtime.GOOS {
 	case `windows`:
 		err = exec.Command(`vlc.exe`, conf.MusicDirectory+track, `--play-and-exit`).Start()
@@ -92,7 +76,6 @@ func play(track string) {
 
 func kill() {
 	var err error
-
 	switch runtime.GOOS {
 	case `windows`:
 		err = exec.Command(`taskkill`, `/F`, `/IM`, `vlc.exe`).Run()
@@ -100,28 +83,46 @@ func kill() {
 		err = exec.Command(`killall`, `afplay`).Run()
 	}
 	if err != nil {
-		die(err)
+		e := fmt.Sprintf(`Cannot skip, maybe tracklist is empty. Error: %s`+nl, err)
+		fmt.Print(e)
+		log.Print(e)
 	}
 }
 
 func serve() {
 	for {
+		var current Track
 		if len(tracks) != 0 {
-			current := tracks[0]
+			current = tracks[0]
 			play(current.Name)
-			log.Print(`Играет трек ` + tracks[0].Name + nl)
+
+			l := fmt.Sprintf(`Играет трек %s`+nl, current.Name)
+			fmt.Print(l)
+			log.Print(l)
 			tracks = tracks[1:]
-
-			select {
-			case <-skip:
-				kill()
-
-			case <-time.After(current.Duration):
-			}
-		} else if len(all) != 0 {
-			log.Print(fmt.Sprintf(`Плейлист играет заново, %d песен`, len(all)), nl)
-			tracks = all
 		}
+
+		select {
+		case a := <-action:
+			switch a {
+			case `skip`:
+				kill()
+			case `repeat`:
+				kill()
+				l := fmt.Sprintf(`Плейлист играет заново, %d песен`+nl, len(all))
+				fmt.Print(l)
+				log.Print(l)
+				tracks = all
+			}
+		case <-time.After(current.Duration):
+			// playing next track
+		}
+
 		time.Sleep(2 * time.Second)
 	}
+}
+
+func die(err error) {
+	log.Print(err, nl)
+	panic(err)
 }
